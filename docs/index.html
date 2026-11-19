@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Crash Buyer Paper Trader</title>
+<style>
+:root{--bg:#0e1117;--panel:#161b24;--line:#262d3a;--txt:#e6e9ef;--dim:#8b95a5;--green:#4ade80;--red:#f87171;--amber:#fbbf24;--blue:#60a5fa;color-scheme:dark}
+@media (prefers-color-scheme: light){:root{--bg:#f5f6f8;--panel:#fff;--line:#dfe3ea;--txt:#171b22;--dim:#5d6676;--green:#15803d;--red:#b91c1c;--amber:#b45309;--blue:#1d4ed8;color-scheme:light}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--txt);font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+.wrap{max-width:1200px;margin:0 auto;padding:14px}header{display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between;margin-bottom:10px}
+h1{font-size:18px;margin:0}h1 small{color:var(--dim);font-weight:400;font-size:12px;margin-left:8px}
+.status{color:var(--dim);font-size:12px}button,select{background:var(--panel);color:var(--txt);border:1px solid var(--line);border-radius:6px;padding:6px 12px;font:inherit;cursor:pointer}
+.strip,.panel,.card{background:var(--panel);border:1px solid var(--line);border-radius:8px}.strip{padding:8px 12px;margin-bottom:10px}.panel{padding:10px;overflow-x:auto}
+.cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:8px;margin:10px 0}.card{padding:8px 12px}.k{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.04em}.v{font-size:18px;font-weight:600}
+.tabs{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:8px}.tabs button.on{background:var(--blue);color:#fff;border-color:var(--blue)}
+table{border-collapse:collapse;width:100%;font-size:12.5px;white-space:nowrap}th{color:var(--dim);font-weight:500;text-align:left;border-bottom:1px solid var(--line);padding:5px 8px}td{padding:5px 8px;border-bottom:1px solid var(--line)}
+.pos{color:var(--green)}.neg{color:var(--red)}.dim{color:var(--dim)}.amb{color:var(--amber)}.hint{color:var(--dim);font-size:12.5px;margin:0 0 8px}
+.warn{background:rgba(251,191,36,.12);border:1px solid var(--amber);color:var(--amber);border-radius:6px;padding:6px 10px;margin-bottom:8px;font-size:12.5px}
+.tag{padding:1px 6px;border-radius:4px;font-size:11px;font-weight:600;background:rgba(96,165,250,.15);color:var(--blue)}.tag.new{background:rgba(251,191,36,.15);color:var(--amber)}
+.bar{height:8px;background:var(--line);border-radius:4px;overflow:hidden;margin:4px 0 10px}.bar i{display:block;height:100%;background:var(--blue)}
+canvas{width:100%;max-width:1000px;height:auto}footer{color:var(--dim);font-size:11.5px;margin-top:12px}li,p{font-size:13px}
+</style></head><body><div class="wrap">
+<header><h1>Crash Buyer Paper Trader <small>buy hard-hit coins when BTC crashes, hold 24h &middot; checks every 15 min &middot; paper only</small></h1>
+<div><span id="status" class="status">Loading...</span> <button id="rl">Reload</button></div></header>
+<div id="msgs"></div><div class="strip" id="gate">Loading...</div>
+<label class="status">Account: <select id="sc"><option value="live">LIVE-LIKE: price when the bot first saw it, 0.5% slip</option><option value="base">BASE: next hourly open, 0.2% slip (backtest)</option><option value="harsh">HARSH: 1h later, 1% slip</option></select></label>
+<div class="cards" id="cards"></div>
+<div class="tabs"><button data-t="trades" class="on">Trades</button><button data-t="equity">Equity</button><button data-t="fill">Fill quality</button><button data-t="verdict">Progress</button><button data-t="rules">Rules</button></div>
+<div class="panel" id="body">Loading...</div>
+<footer>Research tool. Paper trading only: no orders, no API keys. Binance public data. Backtests are not a promise of future results; this is not financial advice.</footer>
+</div><script>
+const $=id=>document.getElementById(id),H=3600e3,REF={base:.0686,harsh:.0325,live:.0325};
+let S=null,tab='trades';
+const pct=(x,d=2)=>Number.isFinite(x)?(x*100).toFixed(d)+'%':'-',usd=x=>Number.isFinite(x)?(x<0?'-':'')+'$'+Math.abs(x).toLocaleString(undefined,{maximumFractionDigits:2}):'-';
+const ts=ms=>new Date(ms).toISOString().replace('T',' ').slice(0,16)+'Z',cls=x=>x>0?'pos':x<0?'neg':'',fp=x=>!Number.isFinite(x)?'-':x>=100?x.toFixed(2):x>=1?x.toFixed(4):x.toPrecision(4);
+async function load(){try{const r=await fetch('data/state.json?'+Date.now());if(!r.ok)throw 0;S=await r.json();render()}catch(e){$('status').textContent='No data yet';$('gate').textContent='-';$('body').innerHTML='<p class="hint">No data file yet. Open the repo Actions tab, pick "crash-buyer scan", click Run workflow, then reload this page.</p>'}}
+function episodes(sigs){const t=sigs.map(s=>s.entryMs).sort((a,b)=>a-b);let n=0,last=-1e18;for(const x of t){if(x-last>48*H)n++;last=x}return n}
+function render(){
+  const k=$('sc').value,c=S.cfg,rows=S.sigs.map(s=>({s,r:s.res[k]||{st:'PENDING'}})).sort((a,b)=>b.s.entryMs-a.s.entryMs);
+  const cl=rows.filter(x=>x.r.st==='CLOSED'),op=rows.filter(x=>x.r.st==='OPEN'),L=S.eqLog,eq=L.length?L[L.length-1][k]:c.startEquity;
+  let pk=c.startEquity,dd=0;for(const p of L){pk=Math.max(pk,p[k]);dd=Math.min(dd,p[k]/pk-1)}
+  const avg=cl.length?cl.reduce((a,x)=>a+x.r.net,0)/cl.length:NaN,win=cl.length?cl.filter(x=>x.r.net>0).length/cl.length:NaN,exp=op.reduce((a,x)=>a+x.r.size,0)/eq;
+  const age=(Date.now()-S.updatedMs)/H,m=[];
+  if(age>6)m.push(`Data is ${age.toFixed(0)} hours old. The schedule may be paused: open the repo Actions tab and check "crash-buyer scan".`);
+  $('msgs').innerHTML=m.map(x=>`<div class="warn">${x}</div>`).join('');
+  $('status').textContent='Updated '+ts(S.updatedMs);
+  const b=S.btc;$('gate').innerHTML=`BTC ${fp(b.price)} | 24h now <b class="${cls(b.r24Now)}">${pct(b.r24Now,1)}</b> | last closed hour <b class="${cls(b.r24Bar)}">${pct(b.r24Bar,1)}</b> | trigger at ${pct(-c.btcDrop,0)} &rarr; <b class="${b.gate?'neg':'dim'}">${b.gate?'CRASH MODE: scanning for coins down '+pct(c.coinDrop,0)+'+':'normal market, waiting'}</b>`;
+  const card=(a,v,cl='')=>`<div class="card"><div class="k">${a}</div><div class="v ${cl}">${v}</div></div>`;
+  $('cards').innerHTML=card('Paper equity',usd(eq))+card('Return',pct(eq/c.startEquity-1),cls(eq-c.startEquity))+card('Max drawdown',pct(dd))+card('Open exposure',pct(exp,0))+card('Closed / open',cl.length+' / '+op.length)+card('Win rate',pct(win,0))+card('Avg net / trade',pct(avg),cls(avg))+card('Crash episodes',episodes(S.sigs));
+  const el=$('body');let h='';
+  if(tab==='trades'){
+    h=`<p class="hint">One row per signal. Signal = coin down ${pct(c.coinDrop,0)}+ in 24h while BTC is down ${pct(c.btcDrop,0)}+. Entry candle is the hour after the signal; exit 24h later. Size ${pct(c.frac,0)} of equity per trade, ${pct(c.maxExp,0)} max invested. "NEW" = coin was not in the 57-coin backtest.</p>`+
+    (rows.length?`<table><thead><tr><th>Entry candle</th><th>Coin</th><th>Coin 24h</th><th>BTC 24h</th><th>Entry</th><th>Exit</th><th>Size</th><th>Net</th><th>P&amp;L</th><th>Status</th></tr></thead><tbody>`+rows.slice(0,300).map(({s,r})=>{const n=r.st==='CLOSED'?r.net:r.st==='OPEN'?r.unreal:NaN;return`<tr><td>${ts(s.entryMs)}</td><td><b>${s.sym.replace('USDT','')}</b> <span class="tag ${s.tested?'':'new'}">${s.tested?'TESTED':'NEW'}</span></td><td class="neg">${pct(s.depth,1)}</td><td class="neg">${pct(s.btc,1)}</td><td>${fp(r.pe)}</td><td>${fp(r.pv)}</td><td>${usd(r.size)}</td><td class="${cls(n)}">${pct(n)}</td><td class="${cls(r.pnl)}">${usd(r.pnl)}</td><td class="${r.st==='CLOSED'?'pos':r.st==='OPEN'?'amb':'dim'}">${r.st}${s.wipe?' (coin vanished: total loss)':''}</td></tr>`}).join('')+'</tbody></table>':'<p class="dim">No signals yet. This is normal: the rule fires only a few times a year, during market-wide crashes.</p>');
+  }else if(tab==='equity'){
+    h='<p class="hint">Marked-to-market equity of the three accounts (saved when it changes, at least every 6 hours).</p><canvas id="cv" width="1000" height="360"></canvas>';el.innerHTML=h;chart();return;
+  }else if(tab==='fill'){
+    const f=S.sigs.filter(s=>s.px.be),lag=f.map(s=>(s.firstSeen-s.entryMs)/60e3),dr=f.map(s=>s.fsPrice/s.px.be-1),h1=f.filter(s=>s.px.he).map(s=>s.px.he/s.px.be-1),av=a=>a.length?a.reduce((x,y)=>x+y,0)/a.length:NaN;
+    h=`<p class="hint">How far real-life fills drift from the backtest. Positive = the price was higher than the backtest entry (worse for a buyer). The backtest assumed ${pct(c.slipBase)} slippage per side (BASE) and ${pct(c.slipHarsh,1)} with a 1h delay (HARSH).</p>
+    <p>Signals measured: <b>${f.length}</b> &middot; avg detection delay after the entry candle opened: <b>${lag.length?av(lag).toFixed(0)+' min':'-'}</b> &middot; avg price drift at first sight: <b class="${cls(-av(dr))}">${pct(av(dr))}</b> &middot; avg price change one hour later: <b>${pct(av(h1))}</b></p>
+    <table><thead><tr><th>Entry candle</th><th>Coin</th><th>Seen after</th><th>Backtest entry</th><th>Price when seen</th><th>Drift</th><th>1h later</th></tr></thead><tbody>`+f.slice().reverse().map(s=>`<tr><td>${ts(s.entryMs)}</td><td><b>${s.sym.replace('USDT','')}</b></td><td>${((s.firstSeen-s.entryMs)/60e3).toFixed(0)} min</td><td>${fp(s.px.be)}</td><td>${fp(s.fsPrice)}</td><td class="${cls(-(s.fsPrice/s.px.be-1))}">${pct(s.fsPrice/s.px.be-1)}</td><td>${s.px.he?pct(s.px.he/s.px.be-1):'-'}</td></tr>`).join('')+'</tbody></table>';
+  }else if(tab==='verdict'){
+    const lv=S.sigs.filter(s=>s.res.live&&s.res.live.st==='CLOSED'),ep=episodes(S.sigs),la=lv.length?lv.reduce((a,s)=>a+s.res.live.net,0)/lv.length:NaN,bar=(v,t)=>`<div class="bar"><i style="width:${Math.min(100,v/t*100)}%"></i></div>`;
+    h=`<p class="hint">The backtest says this rule fires about 10 crash episodes a year. Judge it only after enough real trades.</p>
+    <p>Closed live-like trades: <b>${lv.length}</b> of 15 needed</p>${bar(lv.length,15)}<p>Crash episodes: <b>${ep}</b> of 5 needed</p>${bar(ep,5)}
+    <table><thead><tr><th></th><th>Avg net per trade</th></tr></thead><tbody><tr><td>Backtest, BASE fills</td><td>+6.86%</td></tr><tr><td>Backtest, HARSH fills</td><td>+3.25%</td></tr><tr><td><b>This paper account (live-like)</b></td><td class="${cls(la)}">${lv.length?pct(la):'-'}</td></tr></tbody></table>
+    <p>${lv.length<15||ep<5?'<b>Too early to judge.</b> Keep it running. A few lucky or unlucky trades prove nothing.':la>=REF.harsh*0.5?'Live-like results are close to or above the HARSH backtest. Encouraging, but still a small sample.':la>0?'Positive but well below the backtest: fills are probably costing more than assumed.':'Negative: the edge is not showing up with realistic fills. Do not use real money.'}</p>`;
+  }else{
+    h=`<div class="rules"><p><b>Signal:</b> at the close of an hourly candle, a coin is down ${pct(c.coinDrop,0)} or more over 24h AND BTC is down ${pct(c.btcDrop,0)} or more over 24h. Coins need ${usd(c.minVol)}+ 24h volume.</p>
+    <p><b>Trade:</b> buy at the next hourly open, sell 24 hours later. No stop loss (the backtest showed stops did not help at small size). One position per coin.</p>
+    <p><b>Size:</b> ${pct(c.frac,0)} of equity per trade, at most ${pct(c.maxExp,0)} invested at once, up to ${c.maxPos} positions. Start equity ${usd(c.startEquity)}. Fee ${pct(c.fee)} per side.</p>
+    <p><b>Three accounts:</b> BASE enters at the exact next open with ${pct(c.slipBase)} slippage per side. HARSH enters one hour later with ${pct(c.slipHarsh,1)}. LIVE-LIKE enters at the price the bot saw when it first noticed the signal, with ${pct(c.slipLive,1)} slippage, and skips signals seen more than ${c.liveMaxLagMin} min late.</p>
+    <p class="hint">Account started ${ts(c.startMs)}. Change settings in config.json on GitHub. Delete the startMs line to restart the account.</p></div>`;
+  }
+  el.innerHTML=h;
+}
+function chart(){
+  const cv=$('cv'),g=cv.getContext('2d'),L=S.eqLog,W=cv.width,Hh=cv.height,P=40,col={base:'#60a5fa',harsh:'#fbbf24',live:'#4ade80'};
+  if(L.length<2){g.fillStyle='#8b95a5';g.font='14px sans-serif';g.fillText('Not enough data yet',P,60);return}
+  const t0=L[0].t,t1=L[L.length-1].t||t0+1;let lo=1e18,hi=-1e18;for(const p of L)for(const k in col){lo=Math.min(lo,p[k]);hi=Math.max(hi,p[k])}if(hi-lo<1){hi+=1;lo-=1}
+  const X=t=>P+(t-t0)/Math.max(1,t1-t0)*(W-P-10),Y=v=>Hh-24-(v-lo)/(hi-lo)*(Hh-40);g.font='12px sans-serif';g.fillStyle='#8b95a5';g.fillText(usd(hi),2,16);g.fillText(usd(lo),2,Hh-26);
+  let x=8;for(const k in col){g.strokeStyle=col[k];g.lineWidth=2;g.beginPath();L.forEach((p,i)=>i?g.lineTo(X(p.t),Y(p[k])):g.moveTo(X(p.t),Y(p[k])));g.stroke();g.fillStyle=col[k];g.fillText(k,x+P,Hh-6);x+=70}
+}
+document.querySelectorAll('.tabs button').forEach(b=>b.onclick=()=>{tab=b.dataset.t;document.querySelectorAll('.tabs button').forEach(x=>x.classList.toggle('on',x===b));if(S)render()});
+$('sc').onchange=()=>S&&render();$('rl').onclick=load;load();setInterval(load,300000);
+</script></body></html>
